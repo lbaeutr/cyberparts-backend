@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import require_roles
 from app.db.session import get_db
 from app.models.product import Product
 from app.schemas.product import ProductCreate, ProductRead, ProductUpdate
+from app.services import product_service
 
 router = APIRouter(prefix="/products", tags=["Productos"])
 
@@ -21,23 +21,19 @@ def list_products(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> list[Product]:
-    stmt = select(Product)
-    if only_active:
-        stmt = stmt.where(Product.is_active.is_(True))
-    if category:
-        stmt = stmt.where(Product.category == category)
-    if search:
-        stmt = stmt.where(Product.name.ilike(f"%{search}%"))
-    stmt = stmt.order_by(Product.id).offset(skip).limit(limit)
-    return list(db.scalars(stmt).all())
+    return product_service.list_products(
+        db,
+        category=category,
+        search=search,
+        only_active=only_active,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.get("/{product_id}", response_model=ProductRead)
 def get_product(product_id: int, db: Session = Depends(get_db)) -> Product:
-    product = db.get(Product, product_id)
-    if product is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
-    return product
+    return product_service.get_product(db, product_id)
 
 
 @router.post("", response_model=ProductRead, status_code=status.HTTP_201_CREATED)
@@ -46,11 +42,7 @@ def create_product(
     db: Session = Depends(get_db),
     _: object = Depends(staff),
 ) -> Product:
-    product = Product(**payload.model_dump())
-    db.add(product)
-    db.commit()
-    db.refresh(product)
-    return product
+    return product_service.create_product(db, payload)
 
 
 @router.put("/{product_id}", response_model=ProductRead)
@@ -60,15 +52,7 @@ def update_product(
     db: Session = Depends(get_db),
     _: object = Depends(staff),
 ) -> Product:
-    product = db.get(Product, product_id)
-    if product is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
-
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(product, field, value)
-    db.commit()
-    db.refresh(product)
-    return product
+    return product_service.update_product(db, product_id, payload)
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -77,8 +61,4 @@ def delete_product(
     db: Session = Depends(get_db),
     _: object = Depends(staff),
 ) -> None:
-    product = db.get(Product, product_id)
-    if product is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
-    product.is_active = False
-    db.commit()
+    product_service.deactivate_product(db, product_id)

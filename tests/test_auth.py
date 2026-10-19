@@ -250,3 +250,39 @@ def test_logout_revokes_refresh_token(client, create_user):
         "/api/auth/refresh", cookies={settings.REFRESH_COOKIE_NAME: token}
     )
     assert replay.status_code == 401
+
+
+def test_register_normalizes_email(client, db):
+    payload = {**REGISTER_PAYLOAD, "email": "NewBie@Test.DEV"}
+
+    response = client.post("/api/auth/register", json=payload)
+
+    assert response.status_code == 201, response.text
+    assert response.json()["email"] == "newbie@test.dev"
+    stored = db.scalar(select(User).where(User.username == "newbie"))
+    assert stored is not None
+    assert stored.email == "newbie@test.dev"
+
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "NEWBIE@TEST.DEV", "password": "Secret123!"},
+    )
+    assert login.status_code == 200, login.text
+
+
+def test_register_accepts_password_at_bcrypt_limit(client):
+    response = client.post(
+        "/api/auth/register",
+        json={**REGISTER_PAYLOAD, "password": "a" * 72},
+    )
+
+    assert response.status_code == 201, response.text
+
+
+def test_register_rejects_password_over_bcrypt_limit(client):
+    response = client.post(
+        "/api/auth/register",
+        json={**REGISTER_PAYLOAD, "password": "ñ" * 37},
+    )
+
+    assert response.status_code == 422

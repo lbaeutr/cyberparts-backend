@@ -236,3 +236,126 @@ def test_cancelling_order_restores_stock(client, create_product, cliente_headers
     )
     db.refresh(product)
     assert product.stock == 10
+
+
+def test_failed_order_does_not_modify_stock(client, cliente_headers, create_product, db):
+    product = create_product(stock=2)
+
+    response = client.post(
+        "/api/orders", json=order_payload((product.id, 3)), headers=cliente_headers
+    )
+
+    assert response.status_code == 409
+    db.refresh(product)
+    assert product.stock == 2
+
+
+def test_duplicate_products_are_aggregated(client, cliente_headers, create_product, db):
+    product = create_product(price=Decimal("10.00"), stock=5)
+
+    response = client.post(
+        "/api/orders",
+        json=order_payload((product.id, 2), (product.id, 2)),
+        headers=cliente_headers,
+    )
+
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert len(data["items"]) == 1
+    assert data["items"][0]["quantity"] == 4
+    assert Decimal(data["total"]) == Decimal("40.00")
+    db.refresh(product)
+    assert product.stock == 1
+
+
+def test_duplicate_products_insufficient_stock_returns_409(
+    client, cliente_headers, create_product, db
+):
+    product = create_product(stock=3)
+
+    response = client.post(
+        "/api/orders",
+        json=order_payload((product.id, 2), (product.id, 2)),
+        headers=cliente_headers,
+    )
+
+    assert response.status_code == 409
+    db.refresh(product)
+    assert product.stock == 3
+
+
+def test_invalid_status_transition_returns_409(
+    client, create_product, cliente_headers, admin_headers
+):
+    product = create_product(stock=5)
+    created = client.post(
+        "/api/orders", json=order_payload((product.id, 1)), headers=cliente_headers
+    )
+    order_id = created.json()["id"]
+    paid = client.patch(
+        f"/api/orders/{order_id}/status", json={"status": "PAID"}, headers=admin_headers
+    )
+    assert paid.status_code == 200
+
+    response = client.patch(
+        f"/api/orders/{order_id}/status",
+        json={"status": "PENDING"},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 409
+    assert "no permitida" in response.json()["detail"]
+
+
+def test_delivered_order_cannot_be_cancelled_and_keeps_stock(
+    client, create_product, cliente_headers, admin_headers, db
+):
+    product = create_product(stock=5)
+    created = client.post(
+        "/api/orders", json=order_payload((product.id, 2)), headers=cliente_headers
+    )
+    order_id = created.json()["id"]
+
+    for new_status in ("PAID", "SHIPPED", "DELIVERED"):
+        updated = client.patch(
+            f"/api/orders/{order_id}/status",
+            json={"status": new_status},
+            headers=admin_headers,
+        )
+        assert updated.status_code == 200, updated.text
+
+    db.refresh(product)
+    assert product.stock == 3
+
+    response = client.patch(
+        f"/api/orders/{order_id}/status",
+        json={"status": "CANCELLED"},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 409
+    db.refresh(product)
+    assert product.stock == 3
+
+
+def test_cancelled_order_cannot_be_reopened(
+    client, create_product, cliente_headers, admin_headers
+):
+    product = create_product(stock=5)
+    created = client.post(
+        "/api/orders", json=order_payload((product.id, 1)), headers=cliente_headers
+    )
+    order_id = created.json()["id"]
+
+    cancelled = client.patch(
+        f"/api/orders/{order_id}/status",
+        json={"status": "CANCELLED"},
+        headers=admin_headers,
+    )
+    assert cancelled.status_code == 200
+
+    response = client.patch(
+        f"/api/orders/{order_id}/status", json={"status": "PAID"}, headers=admin_headers
+    )
+
+    assert response.status_code == 409
