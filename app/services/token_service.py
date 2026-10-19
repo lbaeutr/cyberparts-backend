@@ -1,0 +1,57 @@
+from datetime import UTC, datetime, timedelta
+
+from fastapi import HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.core.security import generate_refresh_token, hash_refresh_token
+from app.models.token import RefreshToken
+from app.models.user import User
+
+
+def issue_refresh_token(db: Session, user: User) -> str:
+    raw = generate_refresh_token()
+    token = RefreshToken(
+        user_id=user.id,
+        token_hash=hash_refresh_token(raw),
+        expires_at=datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    db.add(token)
+    db.commit()
+    return raw
+
+
+def rotate_refresh_token(db: Session, raw_token: str) -> tuple[User, str]:
+    token_hash = hash_refresh_token(raw_token)
+    stored = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+
+    if stored is None or stored.revoked or stored.expires_at < datetime.now(UTC):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token invalido o expirado",
+        )
+
+    stored.revoked = True
+    user = db.get(User, stored.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no valido")
+
+    new_raw = generate_refresh_token()
+    db.add(
+        RefreshToken(
+            user_id=user.id,
+            token_hash=hash_refresh_token(new_raw),
+            expires_at=datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        )
+    )
+    db.commit()
+    return user, new_raw
+
+
+def revoke_refresh_token(db: Session, raw_token: str) -> None:
+    token_hash = hash_refresh_token(raw_token)
+    stored = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+    if stored is not None and not stored.revoked:
+        stored.revoked = True
+        db.commit()
