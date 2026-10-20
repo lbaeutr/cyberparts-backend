@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_roles
 from app.db.session import get_db
+from app.models.enums import OrderStatus
 from app.models.order import Order
 from app.models.user import User
 from app.schemas.order import OrderCreate, OrderRead, OrderStatusUpdate
@@ -26,8 +27,13 @@ def create_order(
 def list_orders(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    status_filter: OrderStatus | None = Query(default=None, alias="status"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
 ) -> list[Order]:
-    return order_service.list_orders(db, current_user)
+    return order_service.list_orders(
+        db, current_user, status_filter=status_filter, skip=skip, limit=limit
+    )
 
 
 @router.get("/{order_id}", response_model=OrderRead)

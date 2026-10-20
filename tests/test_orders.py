@@ -359,3 +359,52 @@ def test_cancelled_order_cannot_be_reopened(
     )
 
     assert response.status_code == 409
+
+
+def test_list_orders_filters_by_status(client, create_product, cliente_headers, admin_headers):
+    product = create_product(stock=10)
+    pending = client.post(
+        "/api/orders", json=order_payload((product.id, 1)), headers=cliente_headers
+    ).json()
+    paid = client.post(
+        "/api/orders", json=order_payload((product.id, 1)), headers=cliente_headers
+    ).json()
+    client.patch(
+        f"/api/orders/{paid['id']}/status", json={"status": "PAID"}, headers=admin_headers
+    )
+
+    response = client.get("/api/orders?status=PAID", headers=cliente_headers)
+
+    assert response.status_code == 200, response.text
+    ids = [order["id"] for order in response.json()]
+    assert ids == [paid["id"]]
+    assert pending["id"] not in ids
+
+
+def test_list_orders_paginates(client, create_product, cliente_headers):
+    product = create_product(stock=10)
+    for _ in range(3):
+        client.post("/api/orders", json=order_payload((product.id, 1)), headers=cliente_headers)
+
+    first_page = client.get("/api/orders?limit=2", headers=cliente_headers)
+    second_page = client.get("/api/orders?skip=2&limit=2", headers=cliente_headers)
+
+    assert first_page.status_code == 200, first_page.text
+    assert len(first_page.json()) == 2
+    assert len(second_page.json()) == 1
+    assert {order["id"] for order in first_page.json()}.isdisjoint(
+        {order["id"] for order in second_page.json()}
+    )
+
+
+def test_order_payload_includes_product_and_user_names(client, create_product, cliente_headers):
+    product = create_product(name="Servo Z", price=Decimal("8.00"), stock=3)
+    created = client.post(
+        "/api/orders", json=order_payload((product.id, 1)), headers=cliente_headers
+    )
+    assert created.status_code == 201, created.text
+
+    order = client.get(f"/api/orders/{created.json()['id']}", headers=cliente_headers).json()
+
+    assert order["username"] == "cliente_test"
+    assert order["items"][0]["product_name"] == "Servo Z"

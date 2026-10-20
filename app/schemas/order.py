@@ -20,6 +20,7 @@ class OrderItemRead(BaseModel):
 
     id: int
     product_id: int
+    product_name: str
     quantity: int
     unit_price: Decimal
 
@@ -29,6 +30,7 @@ class OrderRead(BaseModel):
 
     id: int
     user_id: int
+    username: str
     status: OrderStatus
     total: Decimal
     created_at: datetime

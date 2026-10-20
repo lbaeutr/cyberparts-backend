@@ -35,6 +35,10 @@ class Order(Base):
         back_populates="order", cascade="all, delete-orphan"
     )
 
+    @property
+    def username(self) -> str:
+        return self.user.username if self.user else ""
+
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Order #{self.id} {self.status.value}>"
 
@@ -50,3 +54,7 @@ class OrderItem(Base):
 
     order: Mapped[Order] = relationship(back_populates="items")
     product: Mapped[Product] = relationship(lazy="joined")
+
+    @property
+    def product_name(self) -> str:
+        return self.product.name if self.product else ""

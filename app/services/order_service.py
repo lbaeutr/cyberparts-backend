@@ -61,21 +61,31 @@ def create_order(db: Session, user: User, payload: OrderCreate) -> Order:
     return order
 
 
-def list_orders(db: Session, user: User) -> list[Order]:
+def list_orders(
+    db: Session,
+    user: User,
+    *,
+    status_filter: OrderStatus | None = None,
+    skip: int = 0,
+    limit: int = 20,
+) -> list[Order]:
     stmt = (
         select(Order)
-        .options(selectinload(Order.items))
+        .options(selectinload(Order.items), selectinload(Order.user))
         .order_by(Order.id.desc())
     )
     if user.role_name == RoleName.CLIENTE.value:
         stmt = stmt.where(Order.user_id == user.id)
+    if status_filter is not None:
+        stmt = stmt.where(Order.status == status_filter)
+    stmt = stmt.offset(skip).limit(limit)
     return list(db.scalars(stmt).all())
 
 
 def get_order(db: Session, user: User, order_id: int) -> Order:
     order = db.scalar(
         select(Order)
-        .options(selectinload(Order.items))
+        .options(selectinload(Order.items), selectinload(Order.user))
         .where(Order.id == order_id)
     )
     if order is None:
@@ -88,7 +98,7 @@ def get_order(db: Session, user: User, order_id: int) -> Order:
 def update_status(db: Session, order_id: int, new_status: OrderStatus) -> Order:
     order = db.scalar(
         select(Order)
-        .options(selectinload(Order.items))
+        .options(selectinload(Order.items), selectinload(Order.user))
         .where(Order.id == order_id)
         .with_for_update()
     )
