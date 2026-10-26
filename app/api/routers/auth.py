@@ -10,10 +10,18 @@ from app.core.deps import get_current_user
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.auth import LoginRequest, OAuthExchangeRequest, TokenResponse
+from app.schemas.auth import (
+    LoginRequest,
+    OAuthAccountRead,
+    OAuthAccountsRead,
+    OAuthExchangeRequest,
+    OAuthLinkStartResponse,
+    PasswordChangeRequest,
+    TokenResponse,
+)
 from app.schemas.user import UserRead, UserRegister
 from app.services import auth_service, oauth_service
-from app.services.errors import UnauthorizedError
+from app.services.errors import BadRequestError, UnauthorizedError
 from app.services.oauth_service import OAuthFlowError
 from app.services.token_service import (
     issue_refresh_token,
@@ -48,14 +56,14 @@ def _token_response(user: User) -> TokenResponse:
     )
 
 
-def _redirect_frontend(params: dict[str, str]) -> RedirectResponse:
-    url = f"{settings.frontend_base_url}/oauth/callback?{urlencode(params)}"
+def _redirect_frontend(path: str, params: dict[str, str]) -> RedirectResponse:
+    url = f"{settings.frontend_base_url}{path}?{urlencode(params)}"
     response = RedirectResponse(url, status_code=status.HTTP_302_FOUND)
     response.delete_cookie(settings.OAUTH_STATE_COOKIE_NAME, path=OAUTH_COOKIE_PATH)
     return response
 
 
-def _set_oauth_state_cookie(response: RedirectResponse, value: str) -> None:
+def _set_oauth_state_cookie(response: Response, value: str) -> None:
     response.set_cookie(
         key=settings.OAUTH_STATE_COOKIE_NAME,
         value=value,
@@ -72,11 +80,29 @@ def github_start() -> RedirectResponse:
     try:
         authorize_url, state_cookie = oauth_service.build_authorization()
     except OAuthFlowError as exc:
-        return _redirect_frontend({"error": exc.code})
+        return _redirect_frontend("/oauth/callback", {"error": exc.code})
 
     response = RedirectResponse(authorize_url, status_code=status.HTTP_302_FOUND)
     _set_oauth_state_cookie(response, state_cookie)
     return response
+
+
+@router.get("/oauth/github/link/start", response_model=OAuthLinkStartResponse)
+def github_link_start(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+) -> OAuthLinkStartResponse:
+    try:
+        authorize_url, state_cookie = oauth_service.build_authorization(
+            mode="link", user_id=current_user.id
+        )
+    except OAuthFlowError as exc:
+        raise BadRequestError(
+            "El acceso con GitHub no esta configurado en este entorno"
+        ) from exc
+
+    _set_oauth_state_cookie(response, state_cookie)
+    return OAuthLinkStartResponse(authorize_url=authorize_url)
 
 
 @router.get("/oauth/github/callback")
@@ -91,21 +117,68 @@ def github_callback(
 ) -> RedirectResponse:
     if error:
         code_name = "access_denied" if error == "access_denied" else "oauth_unavailable"
-        return _redirect_frontend({"error": code_name})
+        if _is_link_state(state, state_cookie):
+            return _redirect_frontend("/perfil", {"oauth_error": code_name})
+        return _redirect_frontend("/oauth/callback", {"error": code_name})
     if not code or not state:
-        return _redirect_frontend({"error": "invalid_request"})
+        return _redirect_frontend("/oauth/callback", {"error": "invalid_request"})
 
     try:
-        verifier = oauth_service.validate_state(state, state_cookie)
-        user = oauth_service.authenticate_github(db, code, verifier)
+        oauth_state = oauth_service.validate_state(state, state_cookie)
+    except OAuthFlowError as exc:
+        return _redirect_frontend("/oauth/callback", {"error": exc.code})
+
+    if oauth_state.mode == "link":
+        try:
+            user = db.get(User, oauth_state.user_id)
+            if user is None or not user.is_active:
+                raise OAuthFlowError("account_disabled")
+            oauth_service.link_github(db, user, code, oauth_state.verifier)
+        except OAuthFlowError as exc:
+            return _redirect_frontend("/perfil", {"oauth_error": exc.code})
+        except Exception:
+            logger.exception("Fallo inesperado al vincular GitHub")
+            return _redirect_frontend("/perfil", {"oauth_error": "oauth_unavailable"})
+        return _redirect_frontend("/perfil", {"oauth": "linked"})
+
+    try:
+        user = oauth_service.authenticate_github(db, code, oauth_state.verifier)
         exchange_code = oauth_service.issue_exchange_code(db, user)
     except OAuthFlowError as exc:
-        return _redirect_frontend({"error": exc.code})
+        return _redirect_frontend("/oauth/callback", {"error": exc.code})
     except Exception:
         logger.exception("Fallo inesperado en el callback de GitHub")
-        return _redirect_frontend({"error": "oauth_unavailable"})
+        return _redirect_frontend("/oauth/callback", {"error": "oauth_unavailable"})
 
-    return _redirect_frontend({"code": exchange_code})
+    return _redirect_frontend("/oauth/callback", {"code": exchange_code})
+
+
+def _is_link_state(state: str | None, state_cookie: str | None) -> bool:
+    if not state or not state_cookie:
+        return False
+    try:
+        return oauth_service.validate_state(state, state_cookie).mode == "link"
+    except OAuthFlowError:
+        return False
+
+
+@router.get("/oauth/accounts", response_model=OAuthAccountsRead)
+def oauth_accounts(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> OAuthAccountsRead:
+    account = oauth_service.get_linked_account(db, current_user.id)
+    return OAuthAccountsRead(
+        github=OAuthAccountRead.model_validate(account) if account else None
+    )
+
+
+@router.delete("/oauth/github", status_code=status.HTTP_204_NO_CONTENT)
+def unlink_github(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    oauth_service.unlink_github(db, current_user)
 
 
 @router.post("/oauth/exchange", response_model=TokenResponse)
@@ -117,6 +190,22 @@ def exchange_oauth(
     user = oauth_service.consume_exchange_code(db, payload.code)
     _set_refresh_cookie(response, issue_refresh_token(db, user))
     return _token_response(user)
+
+
+@router.post("/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    payload: PasswordChangeRequest,
+    refresh_token: str | None = Cookie(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    auth_service.change_password(
+        db,
+        current_user,
+        payload.current_password,
+        payload.new_password,
+        keep_refresh_token=refresh_token,
+    )
 
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)

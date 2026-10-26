@@ -52,3 +52,24 @@ def revoke_refresh_token(db: Session, raw_token: str) -> None:
     if stored is not None and not stored.revoked:
         stored.revoked = True
         db.commit()
+
+
+def revoke_user_tokens(
+    db: Session, user_id: int, keep_raw_token: str | None = None
+) -> None:
+    keep_hash = hash_refresh_token(keep_raw_token) if keep_raw_token else None
+    tokens = db.scalars(
+        select(RefreshToken).where(
+            RefreshToken.user_id == user_id,
+            RefreshToken.revoked.is_(False),
+        )
+    ).all()
+
+    changed = False
+    for token in tokens:
+        if keep_hash is not None and token.token_hash == keep_hash:
+            continue
+        token.revoked = True
+        changed = True
+    if changed:
+        db.commit()

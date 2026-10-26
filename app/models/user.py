@@ -41,5 +41,9 @@ class User(Base):
     def role_name(self) -> str:
         return self.role.name.value if self.role else ""
 
+    @property
+    def has_password(self) -> bool:
+        return self.password_hash is not None
+
     def __repr__(self) -> str:  # pragma: no cover
         return f"<User {self.username} ({self.role_name})>"

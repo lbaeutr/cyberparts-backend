@@ -13,7 +13,7 @@ from app.services.errors import (
     InternalError,
     UnauthorizedError,
 )
-from app.services.token_service import issue_refresh_token
+from app.services.token_service import issue_refresh_token, revoke_user_tokens
 
 
 def register_user(db: Session, payload: UserRegister) -> User:
@@ -65,3 +65,23 @@ def login_user(db: Session, username: str, password: str) -> tuple[User, str]:
         raise ForbiddenError("Usuario desactivado")
 
     return user, issue_refresh_token(db, user)
+
+
+def change_password(
+    db: Session,
+    user: User,
+    current_password: str | None,
+    new_password: str,
+    keep_refresh_token: str | None = None,
+) -> None:
+    if user.password_hash is not None:
+        valid = bool(current_password) and verify_password(
+            current_password, user.password_hash
+        )
+        if not valid:
+            raise UnauthorizedError("La contrasena actual no es correcta")
+
+    user.password_hash = hash_password(new_password)
+    db.commit()
+    db.refresh(user)
+    revoke_user_tokens(db, user.id, keep_raw_token=keep_refresh_token)

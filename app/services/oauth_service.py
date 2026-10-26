@@ -18,7 +18,12 @@ from app.models.enums import RoleName
 from app.models.oauth import OAuthAccount, OAuthExchangeCode
 from app.models.role import Role
 from app.models.user import User
-from app.services.errors import InternalError, UnauthorizedError
+from app.services.errors import (
+    ConflictError,
+    InternalError,
+    NotFoundError,
+    UnauthorizedError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +48,14 @@ class GitHubIdentity:
     email: str
 
 
+@dataclass(frozen=True)
+class OAuthState:
+    nonce: str
+    verifier: str
+    mode: str
+    user_id: int | None = None
+
+
 def _code_challenge(verifier: str) -> str:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
@@ -52,22 +65,31 @@ def _hash_code(raw_code: str) -> str:
     return hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
 
 
-def build_authorization() -> tuple[str, str]:
+def build_authorization(
+    mode: str = "login", user_id: int | None = None
+) -> tuple[str, str]:
     if not settings.github_oauth_configured:
         raise OAuthFlowError("not_configured")
+    if mode not in {"login", "link"}:
+        raise ValueError(f"Modo OAuth no soportado: {mode}")
+    if mode == "link" and user_id is None:
+        raise ValueError("El modo link requiere user_id")
 
     state = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(64)
     now = datetime.now(UTC)
+    payload = {
+        "type": "oauth_state",
+        "nonce": state,
+        "verifier": verifier,
+        "mode": mode,
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.OAUTH_STATE_TTL_SECONDS),
+    }
+    if user_id is not None:
+        payload["uid"] = user_id
     state_cookie = jwt.encode(
-        {
-            "type": "oauth_state",
-            "nonce": state,
-            "verifier": verifier,
-            "mode": "login",
-            "iat": now,
-            "exp": now + timedelta(seconds=settings.OAUTH_STATE_TTL_SECONDS),
-        },
+        payload,
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM,
     )
@@ -83,7 +105,7 @@ def build_authorization() -> tuple[str, str]:
     return f"{GITHUB_AUTHORIZE_URL}?{urlencode(params)}", state_cookie
 
 
-def validate_state(state: str | None, state_cookie: str | None) -> str:
+def validate_state(state: str | None, state_cookie: str | None) -> OAuthState:
     if not state or not state_cookie:
         raise OAuthFlowError("invalid_state")
 
@@ -98,15 +120,26 @@ def validate_state(state: str | None, state_cookie: str | None) -> str:
 
     nonce = payload.get("nonce")
     verifier = payload.get("verifier")
+    mode = payload.get("mode")
     if (
         payload.get("type") != "oauth_state"
-        or payload.get("mode") != "login"
+        or mode not in {"login", "link"}
         or not isinstance(nonce, str)
         or not isinstance(verifier, str)
         or not secrets.compare_digest(nonce, state)
     ):
         raise OAuthFlowError("invalid_state")
-    return verifier
+
+    user_id = payload.get("uid")
+    if mode == "link" and not isinstance(user_id, int):
+        raise OAuthFlowError("invalid_state")
+
+    return OAuthState(
+        nonce=nonce,
+        verifier=verifier,
+        mode=mode,
+        user_id=user_id if isinstance(user_id, int) else None,
+    )
 
 
 def authenticate_github(db: Session, code: str, verifier: str) -> User:
@@ -129,6 +162,67 @@ def authenticate_github(db: Session, code: str, verifier: str) -> User:
         raise OAuthFlowError("email_in_use")
 
     return _create_user(db, identity)
+
+
+def get_linked_account(db: Session, user_id: int) -> OAuthAccount | None:
+    return db.scalar(
+        select(OAuthAccount).where(
+            OAuthAccount.user_id == user_id,
+            OAuthAccount.provider == "github",
+        )
+    )
+
+
+def link_github(db: Session, user: User, code: str, verifier: str) -> OAuthAccount:
+    access_token = _exchange_github_code(code, verifier)
+    identity = _fetch_github_identity(access_token)
+
+    account = db.scalar(
+        select(OAuthAccount).where(
+            OAuthAccount.provider == "github",
+            OAuthAccount.provider_account_id == identity.account_id,
+        )
+    )
+    if account is not None:
+        if account.user_id != user.id:
+            raise OAuthFlowError("github_in_use")
+        account.username = identity.login
+        account.email = identity.email
+        account.last_login_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(account)
+        return account
+
+    if get_linked_account(db, user.id) is not None:
+        raise OAuthFlowError("github_already_linked")
+
+    account = OAuthAccount(
+        user_id=user.id,
+        provider="github",
+        provider_account_id=identity.account_id,
+        username=identity.login,
+        email=identity.email,
+    )
+    db.add(account)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise OAuthFlowError("github_in_use") from exc
+    db.refresh(account)
+    return account
+
+
+def unlink_github(db: Session, user: User) -> None:
+    account = get_linked_account(db, user.id)
+    if account is None:
+        raise NotFoundError("No hay una cuenta de GitHub vinculada")
+    if user.password_hash is None:
+        raise ConflictError(
+            "Configura una contrasena antes de desvincular GitHub para no perder el acceso"
+        )
+    db.delete(account)
+    db.commit()
 
 
 def issue_exchange_code(db: Session, user: User) -> str:

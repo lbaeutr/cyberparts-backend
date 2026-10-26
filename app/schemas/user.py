@@ -42,6 +42,7 @@ class UserRead(BaseModel):
     is_active: bool
     created_at: datetime
     role: RoleName = Field(validation_alias="role_name")
+    has_password: bool
 
 
 class UserRoleUpdate(BaseModel):
