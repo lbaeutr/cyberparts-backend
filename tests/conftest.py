@@ -7,6 +7,12 @@ os.environ["DATABASE_URL"] = os.environ.get(
 )
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ["COOKIE_SECURE"] = "false"
+os.environ.setdefault("GITHUB_CLIENT_ID", "test-client-id")
+os.environ.setdefault("GITHUB_CLIENT_SECRET", "test-client-secret")
+os.environ.setdefault("FRONTEND_URL", "http://frontend.test")
+os.environ.setdefault(
+    "GITHUB_REDIRECT_URI", "http://api.test/api/auth/oauth/github/callback"
+)
 
 import psycopg
 import pytest
@@ -96,7 +102,8 @@ def _reset_db():
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE order_items, orders, refresh_tokens, products, users, roles "
+                "TRUNCATE TABLE oauth_exchange_codes, oauth_accounts, order_items, "
+                "orders, refresh_tokens, products, users, roles "
                 "RESTART IDENTITY CASCADE"
             )
         )

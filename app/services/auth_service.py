@@ -57,7 +57,9 @@ def login_user(db: Session, username: str, password: str) -> tuple[User, str]:
             )
         )
     )
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None or user.password_hash is None:
+        raise UnauthorizedError("Credenciales incorrectas")
+    if not verify_password(password, user.password_hash):
         raise UnauthorizedError("Credenciales incorrectas")
     if not user.is_active:
         raise ForbiddenError("Usuario desactivado")

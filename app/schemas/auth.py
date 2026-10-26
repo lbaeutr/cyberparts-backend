@@ -13,3 +13,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: UserRead
+
+
+class OAuthExchangeRequest(BaseModel):
+    code: str = Field(min_length=16, max_length=256)
