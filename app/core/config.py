@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:5173"
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
-    GITHUB_REDIRECT_URI: str = "http://127.0.0.1:8000/api/auth/oauth/github/callback"
+    GITHUB_REDIRECT_URI: str = "http://localhost:8000/api/auth/oauth/github/callback"
     GITHUB_OAUTH_SCOPES: str = "read:user user:email"
     OAUTH_STATE_COOKIE_NAME: str = "oauth_state"
     OAUTH_STATE_TTL_SECONDS: int = 600
