@@ -7,6 +7,7 @@ os.environ["DATABASE_URL"] = os.environ.get(
 )
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ["COOKIE_SECURE"] = "false"
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 os.environ.setdefault("GITHUB_CLIENT_ID", "test-client-id")
 os.environ.setdefault("GITHUB_CLIENT_SECRET", "test-client-secret")
 os.environ.setdefault("FRONTEND_URL", "http://frontend.test")
@@ -20,6 +21,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 
+from app.core.rate_limit import LIMITER
 from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
@@ -113,6 +115,13 @@ def _reset_db():
         )
         db.commit()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    LIMITER.reset()
+    yield
+    LIMITER.reset()
 
 
 @pytest.fixture

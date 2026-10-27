@@ -1,12 +1,23 @@
 import logging
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Cookie, Depends, Response, status
+from fastapi import APIRouter, Cookie, Depends, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.deps import get_current_user
+from app.core.rate_limit import (
+    LOGIN_IDENTIFIER,
+    LOGIN_IP,
+    OAUTH_CALLBACK,
+    OAUTH_EXCHANGE,
+    OAUTH_START,
+    PASSWORD,
+    REFRESH,
+    REGISTER,
+    enforce,
+)
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.models.user import User
@@ -76,7 +87,8 @@ def _set_oauth_state_cookie(response: Response, value: str) -> None:
 
 
 @router.get("/oauth/github/start")
-def github_start() -> RedirectResponse:
+def github_start(request: Request) -> RedirectResponse:
+    enforce(request, "oauth-start", OAUTH_START)
     try:
         authorize_url, state_cookie = oauth_service.build_authorization()
     except OAuthFlowError as exc:
@@ -89,9 +101,11 @@ def github_start() -> RedirectResponse:
 
 @router.get("/oauth/github/link/start", response_model=OAuthLinkStartResponse)
 def github_link_start(
+    request: Request,
     response: Response,
     current_user: User = Depends(get_current_user),
 ) -> OAuthLinkStartResponse:
+    enforce(request, "oauth-link-start", OAUTH_START, subject=str(current_user.id))
     try:
         authorize_url, state_cookie = oauth_service.build_authorization(
             mode="link", user_id=current_user.id
@@ -107,6 +121,7 @@ def github_link_start(
 
 @router.get("/oauth/github/callback")
 def github_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
@@ -115,6 +130,7 @@ def github_callback(
     ),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
+    enforce(request, "oauth-callback", OAUTH_CALLBACK)
     if error:
         code_name = "access_denied" if error == "access_denied" else "oauth_unavailable"
         if _is_link_state(state, state_cookie):
@@ -184,9 +200,11 @@ def unlink_github(
 @router.post("/oauth/exchange", response_model=TokenResponse)
 def exchange_oauth(
     payload: OAuthExchangeRequest,
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
 ) -> TokenResponse:
+    enforce(request, "oauth-exchange", OAUTH_EXCHANGE)
     user = oauth_service.consume_exchange_code(db, payload.code)
     _set_refresh_cookie(response, issue_refresh_token(db, user))
     return _token_response(user)
@@ -195,10 +213,12 @@ def exchange_oauth(
 @router.post("/password", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(
     payload: PasswordChangeRequest,
+    request: Request,
     refresh_token: str | None = Cookie(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
+    enforce(request, "password", PASSWORD, subject=str(current_user.id))
     auth_service.change_password(
         db,
         current_user,
@@ -209,12 +229,24 @@ def change_password(
 
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-def register(payload: UserRegister, db: Session = Depends(get_db)) -> User:
+def register(
+    payload: UserRegister,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> User:
+    enforce(request, "register", REGISTER)
     return auth_service.register_user(db, payload)
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> TokenResponse:
+def login(
+    payload: LoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    enforce(request, "login-ip", LOGIN_IP)
+    enforce(request, "login-user", LOGIN_IDENTIFIER, subject=payload.username)
     user, refresh_raw = auth_service.login_user(db, payload.username, payload.password)
     _set_refresh_cookie(response, refresh_raw)
     return _token_response(user)
@@ -222,14 +254,21 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
 
 @router.post("/refresh", response_model=TokenResponse)
 def refresh(
+    request: Request,
     response: Response,
     refresh_token: str | None = Cookie(default=None),
     db: Session = Depends(get_db),
 ) -> TokenResponse:
+    enforce(request, "refresh", REFRESH)
     if not refresh_token:
         raise UnauthorizedError("Sin refresh token")
 
-    user, new_raw = rotate_refresh_token(db, refresh_token)
+    try:
+        user, new_raw = rotate_refresh_token(db, refresh_token)
+    except UnauthorizedError:
+        response.delete_cookie(settings.REFRESH_COOKIE_NAME, path="/")
+        raise
+
     _set_refresh_cookie(response, new_raw)
     return _token_response(user)
 

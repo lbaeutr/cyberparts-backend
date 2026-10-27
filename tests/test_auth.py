@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.security import decode_access_token, verify_password
 from app.main import app
+from app.models.token import RefreshToken
 from app.models.user import User
 
 REGISTER_PAYLOAD = {
@@ -286,3 +287,73 @@ def test_register_rejects_password_over_bcrypt_limit(client):
     )
 
     assert response.status_code == 422
+
+
+def _login_and_refresh(client, username="trinity"):
+    login_response = client.post(
+        "/api/auth/login",
+        json={"username": username, "password": "Test1234!"},
+    )
+    assert login_response.status_code == 200, login_response.text
+    old_token = client.cookies.get(settings.REFRESH_COOKIE_NAME)
+
+    refresh_response = client.post("/api/auth/refresh")
+    assert refresh_response.status_code == 200, refresh_response.text
+    new_token = client.cookies.get(settings.REFRESH_COOKIE_NAME)
+    assert old_token and new_token and old_token != new_token
+    return old_token, new_token
+
+
+def test_refresh_reuse_outside_grace_revokes_family(client, create_user, db, monkeypatch):
+    monkeypatch.setattr(settings, "REFRESH_REUSE_GRACE_SECONDS", 0)
+    user = create_user("trinity")
+    old_token, new_token = _login_and_refresh(client)
+
+    replay = TestClient(app).post(
+        "/api/auth/refresh", cookies={settings.REFRESH_COOKIE_NAME: old_token}
+    )
+    assert replay.status_code == 401
+
+    family_replay = TestClient(app).post(
+        "/api/auth/refresh", cookies={settings.REFRESH_COOKIE_NAME: new_token}
+    )
+    assert family_replay.status_code == 401
+
+    db.expire_all()
+    tokens = db.scalars(
+        select(RefreshToken).where(RefreshToken.user_id == user.id)
+    ).all()
+    assert len(tokens) == 2
+    assert all(token.revoked for token in tokens)
+    assert all(token.revoked_at is not None for token in tokens)
+
+
+def test_refresh_reuse_within_grace_keeps_family(client, create_user, monkeypatch):
+    monkeypatch.setattr(settings, "REFRESH_REUSE_GRACE_SECONDS", 60)
+    create_user("trinity")
+    old_token, new_token = _login_and_refresh(client)
+
+    replay = TestClient(app).post(
+        "/api/auth/refresh", cookies={settings.REFRESH_COOKIE_NAME: old_token}
+    )
+    assert replay.status_code == 401
+
+    valid = TestClient(app).post(
+        "/api/auth/refresh", cookies={settings.REFRESH_COOKIE_NAME: new_token}
+    )
+    assert valid.status_code == 200, valid.text
+
+
+def test_logout_revokes_family_tokens(client, create_user, db):
+    user = create_user("trinity")
+    _login_and_refresh(client)
+
+    logout = client.post("/api/auth/logout")
+    assert logout.status_code == 204
+
+    db.expire_all()
+    tokens = db.scalars(
+        select(RefreshToken).where(RefreshToken.user_id == user.id)
+    ).all()
+    assert tokens
+    assert all(token.revoked for token in tokens)
