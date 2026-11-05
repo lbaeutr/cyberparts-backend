@@ -1,8 +1,16 @@
+databases:
+  - name: cyberparts-db
+    plan: free
+    region: frankfurt
+    databaseName: cyberparts
+    user: cyberparts
+
 services:
   - type: web
     name: cyberparts-lbaeutr-api
     runtime: python
     plan: free
+    region: frankfurt
     buildCommand: pip install -r requirements.txt
     startCommand: 'alembic upgrade head && python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"'
     healthCheckPath: /api/health
@@ -14,7 +22,9 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: cyberparts-db
+          property: connectionString
       - key: COOKIE_SECURE
         value: "true"
       - key: COOKIE_SAMESITE

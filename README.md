@@ -8,13 +8,20 @@ monorepo y se publican con `scripts/push-deploy.sh`.
 
 ## Despliegue en Render
 
-El servicio se define en `render.yaml` (Blueprint). Variables manuales:
+El servicio y la base de datos se definen en `render.yaml` (Blueprint), en la región
+`frankfurt`. `DATABASE_URL` se inyecta automáticamente desde el recurso
+`cyberparts-db` (`fromDatabase`); la aplicación acepta `postgres://` o `postgresql://` y la
+normaliza a `postgresql+psycopg://`.
 
-- `DATABASE_URL`: cadena de conexión directa de Neon (acepta `postgres://` o
-  `postgresql://`; la aplicación la normaliza a `postgresql+psycopg://`).
+Variables manuales:
+
 - `ADMIN_EMAIL` y `ADMIN_PASSWORD`: administrador inicial. En producción la aplicación
   rechaza la contraseña por defecto `Admin123!`.
 - `GITHUB_CLIENT_ID` y `GITHUB_CLIENT_SECRET`: OAuth App de producción.
+
+**Aviso:** la base de datos gratuita de Render expira a los **30 días** de su creación y se
+borra tras 14 días de gracia. Para conservar los datos hay que exportarlos o pasar a un plan
+de pago antes de ese plazo.
 
 El resto de variables (`ENVIRONMENT`, `SECRET_KEY`, cookies, CORS, `FRONTEND_URL`,
 `SEED_DEMO_USERS`, `GITHUB_REDIRECT_URI`) se define en `render.yaml`.
