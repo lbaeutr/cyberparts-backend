@@ -59,6 +59,26 @@ def _set_refresh_cookie(response: Response, raw_token: str) -> None:
     )
 
 
+def _delete_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.REFRESH_COOKIE_NAME,
+        path="/",
+        secure=settings.COOKIE_SECURE,
+        httponly=True,
+        samesite=settings.COOKIE_SAMESITE,
+    )
+
+
+def _delete_oauth_state_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.OAUTH_STATE_COOKIE_NAME,
+        path=OAUTH_COOKIE_PATH,
+        secure=settings.COOKIE_SECURE,
+        httponly=True,
+        samesite="lax",
+    )
+
+
 def _token_response(user: User) -> TokenResponse:
     return TokenResponse(
         access_token=create_access_token(str(user.id), user.role_name),
@@ -70,7 +90,7 @@ def _token_response(user: User) -> TokenResponse:
 def _redirect_frontend(path: str, params: dict[str, str]) -> RedirectResponse:
     url = f"{settings.frontend_base_url}{path}?{urlencode(params)}"
     response = RedirectResponse(url, status_code=status.HTTP_302_FOUND)
-    response.delete_cookie(settings.OAUTH_STATE_COOKIE_NAME, path=OAUTH_COOKIE_PATH)
+    _delete_oauth_state_cookie(response)
     return response
 
 
@@ -266,7 +286,7 @@ def refresh(
     try:
         user, new_raw = rotate_refresh_token(db, refresh_token)
     except UnauthorizedError:
-        response.delete_cookie(settings.REFRESH_COOKIE_NAME, path="/")
+        _delete_refresh_cookie(response)
         raise
 
     _set_refresh_cookie(response, new_raw)
@@ -281,7 +301,7 @@ def logout(
 ) -> None:
     if refresh_token:
         revoke_refresh_token(db, refresh_token)
-    response.delete_cookie(settings.REFRESH_COOKIE_NAME, path="/")
+    _delete_refresh_cookie(response)
 
 
 @router.get("/me", response_model=UserRead)

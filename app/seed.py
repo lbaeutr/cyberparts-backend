@@ -314,20 +314,21 @@ def seed(db: Session) -> None:
         )
         db.commit()
 
-    role_by_name = {r.name: r for r in db.scalars(select(Role)).all()}
-    existing_usernames = set(db.scalars(select(User.username)).all())
-    for username, email, role_name in MATRIX_USERS:
-        if username in existing_usernames:
-            continue
-        db.add(
-            User(
-                username=username,
-                email=email,
-                password_hash=hash_password(MATRIX_PASSWORD),
-                role_id=role_by_name[role_name].id,
+    if settings.SEED_DEMO_USERS:
+        role_by_name = {r.name: r for r in db.scalars(select(Role)).all()}
+        existing_usernames = set(db.scalars(select(User.username)).all())
+        for username, email, role_name in MATRIX_USERS:
+            if username in existing_usernames:
+                continue
+            db.add(
+                User(
+                    username=username,
+                    email=email,
+                    password_hash=hash_password(MATRIX_PASSWORD),
+                    role_id=role_by_name[role_name].id,
+                )
             )
-        )
-    db.commit()
+        db.commit()
 
     existing_names = set(db.scalars(select(Product.name)).all())
     new_products = [Product(**data) for data in PRODUCTS if data["name"] not in existing_names]

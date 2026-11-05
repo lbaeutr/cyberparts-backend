@@ -1,10 +1,11 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_SECRET_KEY = "change-me-in-production-please-use-a-long-random-string"
+DEFAULT_ADMIN_PASSWORD = "Admin123!"
 
 
 class Settings(BaseSettings):
@@ -32,7 +33,9 @@ class Settings(BaseSettings):
 
     ADMIN_USERNAME: str = "admin"
     ADMIN_EMAIL: str = "admin@cyberparts.dev"
-    ADMIN_PASSWORD: str = "Admin123!"
+    ADMIN_PASSWORD: str = DEFAULT_ADMIN_PASSWORD
+
+    SEED_DEMO_USERS: bool = False
 
     FRONTEND_URL: str = "http://localhost:5173"
     GITHUB_CLIENT_ID: str = ""
@@ -51,10 +54,24 @@ class Settings(BaseSettings):
     def frontend_base_url(self) -> str:
         return self.FRONTEND_URL.rstrip("/")
 
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        if value.startswith("postgres://"):
+            return "postgresql+psycopg://" + value[len("postgres://") :]
+        if value.startswith("postgresql://"):
+            return "postgresql+psycopg://" + value[len("postgresql://") :]
+        return value
+
     @model_validator(mode="after")
-    def _validate_secret_key(self) -> "Settings":
-        if self.ENVIRONMENT == "production" and self.SECRET_KEY == DEFAULT_SECRET_KEY:
-            raise ValueError("SECRET_KEY debe configurarse con un valor propio en produccion")
+    def _validate_production_secrets(self) -> "Settings":
+        if self.ENVIRONMENT == "production":
+            if self.SECRET_KEY == DEFAULT_SECRET_KEY:
+                raise ValueError("SECRET_KEY debe configurarse con un valor propio en produccion")
+            if self.ADMIN_PASSWORD == DEFAULT_ADMIN_PASSWORD:
+                raise ValueError("ADMIN_PASSWORD debe cambiarse en produccion")
         return self
 
 
